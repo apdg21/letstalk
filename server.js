@@ -158,6 +158,7 @@ app.get('/', (req, res) => {
     <html>
     <head>
       <title>Simple Walkie Talkie</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
         * {
           margin: 0;
@@ -268,21 +269,62 @@ app.get('/', (req, res) => {
         .talk-btn {
           background: #e74c3c;
           color: white;
-          padding: 20px;
-          font-size: 18px;
+          padding: 25px;
+          font-size: 20px;
           border-radius: 50px;
-          min-height: 80px;
+          min-height: 100px;
           width: 100%;
+          border: none;
+          cursor: pointer;
+          transition: all 0.3s;
+          font-weight: bold;
         }
         
         .talk-btn.talking {
           background: #c0392b;
           transform: scale(1.05);
+          box-shadow: 0 0 30px rgba(192, 57, 43, 0.6);
+          animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0.7); }
+          70% { box-shadow: 0 0 0 20px rgba(192, 57, 43, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0); }
         }
         
         .user-count {
           font-weight: bold;
           color: #667eea;
+        }
+        
+        .audio-tips {
+          margin-top: 15px;
+          padding: 10px;
+          background: #e8f4fd;
+          border-radius: 8px;
+          font-size: 14px;
+          color: #0066cc;
+        }
+        
+        .status-indicator {
+          margin-top: 10px;
+          padding: 8px 15px;
+          border-radius: 20px;
+          font-size: 14px;
+          font-weight: 600;
+        }
+        
+        .status-listening {
+          background: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        
+        .status-talking {
+          background: #f8d7da;
+          color: #721c24;
+          border: 1px solid #f5c6cb;
         }
       </style>
     </head>
@@ -303,14 +345,23 @@ app.get('/', (req, res) => {
           <h3>Room: <span id="roomIdDisplay"></span></h3>
           <p>Share this link: <br><a id="roomLink" href="#" target="_blank"></a></p>
           <p>Users connected: <span class="user-count" id="userCount">1</span></p>
+          <div class="audio-tips">
+            🔊 Audio will play through speaker (like a real walkie-talkie)
+          </div>
         </div>
         
         <div class="controls" id="controls">
-          <button class="talk-btn" id="talkButton" 
-                  onmousedown="startTalking()" onmouseup="stopTalking()"
-                  ontouchstart="startTalking()" ontouchend="stopTalking()">
-            🎤 Hold to Talk
+          <div class="status-indicator" id="statusIndicator">
+            <span id="statusText">Ready to talk</span>
+          </div>
+          
+          <button class="talk-btn" id="talkButton" onclick="toggleTalking()">
+            🎤 Click to Start Talking
           </button>
+          
+          <div class="audio-tips">
+            💡 Click once to start talking, click again to stop
+          </div>
         </div>
       </div>
 
@@ -321,6 +372,7 @@ app.get('/', (req, res) => {
         let mediaRecorder = null;
         let audioChunks = [];
         let isTalking = false;
+        let mediaStream = null;
 
         // Check for room ID in URL
         const urlParams = new URLSearchParams(window.location.search);
@@ -343,64 +395,86 @@ app.get('/', (req, res) => {
           }
         }
 
-        function startTalking() {
+        async function toggleTalking() {
           if (!isTalking) {
-            startRecording();
+            // Start talking
+            await startContinuousRecording();
             document.getElementById('talkButton').classList.add('talking');
-            document.getElementById('talkButton').textContent = '🎤 Talking...';
+            document.getElementById('talkButton').textContent = '🛑 Click to Stop Talking';
+            document.getElementById('statusText').textContent = '🎤 TRANSMITTING...';
+            document.getElementById('statusIndicator').className = 'status-indicator status-talking';
             isTalking = true;
-          }
-        }
-
-        function stopTalking() {
-          if (isTalking) {
-            stopRecording();
+          } else {
+            // Stop talking
+            stopContinuousRecording();
             document.getElementById('talkButton').classList.remove('talking');
-            document.getElementById('talkButton').textContent = '🎤 Hold to Talk';
+            document.getElementById('talkButton').textContent = '🎤 Click to Start Talking';
+            document.getElementById('statusText').textContent = '👂 Listening...';
+            document.getElementById('statusIndicator').className = 'status-indicator status-listening';
             isTalking = false;
           }
         }
 
-        async function startRecording() {
+        async function startContinuousRecording() {
           try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
+            mediaStream = await navigator.mediaDevices.getUserMedia({ 
               audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
-                sampleRate: 16000
+                sampleRate: 16000,
+                channelCount: 1
               } 
             });
-            mediaRecorder = new MediaRecorder(stream);
+            
+            mediaRecorder = new MediaRecorder(mediaStream, {
+              mimeType: 'audio/webm;codecs=opus',
+              audioBitsPerSecond: 128000
+            });
+            
             audioChunks = [];
 
             mediaRecorder.ondataavailable = (event) => {
               if (event.data.size > 0) {
                 audioChunks.push(event.data);
+                sendAudioChunk(event.data);
               }
             };
 
             mediaRecorder.onstop = () => {
-              const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-              sendAudio(audioBlob);
-              
-              // Stop all tracks
-              stream.getTracks().forEach(track => track.stop());
+              // Clean up
+              if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+              }
             };
 
-            mediaRecorder.start(1000); // Collect data every second
+            // Start recording continuously
+            mediaRecorder.start(1000); // Send data every second
+            console.log('🎤 Started continuous recording');
+            
           } catch (error) {
             console.error('Error accessing microphone:', error);
             alert('Cannot access microphone. Please check permissions.');
+            // Reset state if failed
+            isTalking = false;
+            document.getElementById('talkButton').classList.remove('talking');
+            document.getElementById('talkButton').textContent = '🎤 Click to Start Talking';
           }
         }
 
-        function stopRecording() {
+        function stopContinuousRecording() {
           if (mediaRecorder && mediaRecorder.state === 'recording') {
             mediaRecorder.stop();
+            console.log('🛑 Stopped continuous recording');
+          }
+          
+          if (mediaStream) {
+            mediaStream.getTracks().forEach(track => track.stop());
+            mediaStream = null;
           }
         }
 
-        function sendAudio(audioBlob) {
+        function sendAudioChunk(audioBlob) {
           const reader = new FileReader();
           reader.onload = () => {
             const arrayBuffer = reader.result;
@@ -412,6 +486,41 @@ app.get('/', (req, res) => {
             });
           };
           reader.readAsArrayBuffer(audioBlob);
+        }
+
+        // Force audio through speaker (like walkie-talkie)
+        function playAudioThroughSpeaker(audioData) {
+          try {
+            const uint8Array = new Uint8Array(audioData);
+            const audioBlob = new Blob([uint8Array], { type: 'audio/webm' });
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+            
+            // Critical: Force audio through speaker
+            audio.setAttribute('playsinline', 'false');
+            audio.setAttribute('webkit-playsinline', 'false');
+            
+            // Important for mobile devices
+            document.body.appendChild(audio);
+            
+            // Play through speaker
+            audio.play().then(() => {
+              console.log('🔊 Audio playing through speaker');
+            }).catch(error => {
+              console.log('Audio play error, trying fallback:', error);
+              // Fallback: try to play normally
+              audio.play().catch(e => console.log('Fallback also failed:', e));
+            });
+            
+            // Clean up
+            audio.onended = () => {
+              document.body.removeChild(audio);
+              URL.revokeObjectURL(audioUrl);
+            };
+            
+          } catch (error) {
+            console.error('Error playing audio:', error);
+          }
         }
 
         // Socket event handlers
@@ -437,7 +546,7 @@ app.get('/', (req, res) => {
         });
 
         socket.on('audio', (data) => {
-          playAudio(data.audioData);
+          playAudioThroughSpeaker(data.audioData);
         });
 
         socket.on('error', (data) => {
@@ -455,17 +564,27 @@ app.get('/', (req, res) => {
           document.getElementById('roomLink').href = roomLink;
         }
 
-        function playAudio(audioData) {
-          try {
-            const uint8Array = new Uint8Array(audioData);
-            const audioBlob = new Blob([uint8Array], { type: 'audio/webm' });
-            const audioUrl = URL.createObjectURL(audioBlob);
-            const audio = new Audio(audioUrl);
-            audio.play().catch(e => console.log('Audio play error:', e));
-          } catch (error) {
-            console.error('Error playing audio:', error);
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+          if (isTalking) {
+            stopContinuousRecording();
           }
-        }
+        });
+
+        // Request audio permissions on page load for better UX
+        window.addEventListener('load', () => {
+          // This helps with getting audio permissions early
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ audio: true })
+              .then(stream => {
+                console.log('✅ Audio permissions granted');
+                stream.getTracks().forEach(track => track.stop()); // Stop immediately
+              })
+              .catch(error => {
+                console.log('Audio permissions not granted yet:', error);
+              });
+          }
+        });
       </script>
     </body>
     </html>
@@ -480,8 +599,9 @@ app.use('*', (req, res) => {
 // Start server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log('\n✅ Server running on port ${PORT}');
-  console.log('🔗 http://localhost:${PORT}');
-  console.log('🎤 Simple room-based walkie talkie ready!');
-  console.log('=========================================');
+  console.log(\`\n✅ Server running on port \${PORT}\`);
+  console.log(\`🔗 http://localhost:\${PORT}\`);
+  console.log(\`🎤 Simple room-based walkie talkie ready!\`);
+  console.log(\`🔊 Toggle mode: Click once to talk, click again to stop\`);
+  console.log(\`=========================================\`);
 });
