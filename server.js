@@ -599,9 +599,11 @@ app.use('*', (req, res) => {
 // Start server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(\`\n✅ Server running on port \${PORT}\`);
-  console.log(\`🔗 http://localhost:\${PORT}\`);
-  console.log(\`🎤 Simple room-based walkie talkie ready!\`);
-  console.log(\`🔊 Toggle mode: Click once to talk, click again to stop\`);
-  console.log(\`=========================================\`);
+  console.log(`
+✅ Server running on port ${PORT}
+🔗 http://localhost:${PORT}
+🎤 Simple room-based walkie talkie ready!
+🔊 Toggle mode: Click once to talk, click again to stop
+=========================================
+`);
 });
