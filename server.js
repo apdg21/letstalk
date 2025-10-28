@@ -75,6 +75,7 @@ io.on('connection', (socket) => {
     
     console.log(`👥 ${userNames.get(socket.id)} joining room ${roomId}. Current users:`, userNamesInRoom.map(u => u.name));
 
+    // Send room info to the joining user FIRST (includes ALL users)
     socket.emit('room-joined', { 
       roomId, 
       users: userNamesInRoom,
@@ -82,6 +83,7 @@ io.on('connection', (socket) => {
       isCreator: room.creator === socket.id
     });
     
+    // THEN notify others about the new user
     socket.to(roomId).emit('user-joined', { 
       userId: socket.id,
       userName: userNames.get(socket.id)
@@ -90,13 +92,28 @@ io.on('connection', (socket) => {
     console.log(`👥 ${userNames.get(socket.id)} joined room ${roomId}`);
   });
 
-  socket.on('audio', (data) => {
-    const { roomId, audioData } = data;
-    
-    socket.to(roomId).emit('audio', {
+  // WebRTC signaling events
+  socket.on('webrtc-offer', (data) => {
+    const { to, sdp } = data;
+    socket.to(to).emit('webrtc-offer', {
       from: socket.id,
-      fromName: userNames.get(socket.id),
-      audioData: audioData
+      sdp: sdp
+    });
+  });
+
+  socket.on('webrtc-answer', (data) => {
+    const { to, sdp } = data;
+    socket.to(to).emit('webrtc-answer', {
+      from: socket.id,
+      sdp: sdp
+    });
+  });
+
+  socket.on('webrtc-ice-candidate', (data) => {
+    const { to, candidate } = data;
+    socket.to(to).emit('webrtc-ice-candidate', {
+      from: socket.id,
+      candidate: candidate
     });
   });
 
