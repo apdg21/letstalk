@@ -70,23 +70,26 @@ io.on('connection', (socket) => {
     room.users.push(socket.id);
     socket.join(roomId);
     
-    // Get names of all users in the room
+    // Get COMPLETE list of all users in the room with their names
     const userNamesInRoom = room.users.map(userId => ({
       id: userId,
       name: userNames.get(userId)
     }));
     
-    // Notify others in the room
+    console.log(`👥 ${userNames.get(socket.id)} joining room ${roomId}. Current users:`, userNamesInRoom.map(u => u.name));
+
+    // FIRST: Notify the NEW USER with complete user list
+    socket.emit('room-joined', { 
+      roomId, 
+      users: userNamesInRoom, // Send complete list including existing users
+      userName: userNames.get(socket.id),
+      isCreator: room.creator === socket.id
+    });
+    
+    // THEN: Notify EXISTING USERS about the new user
     socket.to(roomId).emit('user-joined', { 
       userId: socket.id,
       userName: userNames.get(socket.id)
-    });
-    
-    socket.emit('room-joined', { 
-      roomId, 
-      users: userNamesInRoom,
-      userName: userNames.get(socket.id),
-      isCreator: room.creator === socket.id
     });
     
     console.log(`👥 ${userNames.get(socket.id)} joined room ${roomId}`);
@@ -407,6 +410,18 @@ app.get('/', (req, res) => {
           background: #f8fff9;
         }
         
+        .debug-info {
+          margin-top: 10px;
+          padding: 10px;
+          background: #f8f9fa;
+          border-radius: 8px;
+          font-size: 12px;
+          color: #666;
+          text-align: left;
+          max-height: 100px;
+          overflow-y: auto;
+        }
+        
         /* Mobile improvements */
         @media (max-width: 480px) {
           .container {
@@ -470,6 +485,10 @@ app.get('/', (req, res) => {
             <!-- Users will be added here dynamically -->
           </div>
           
+          <div class="debug-info" id="debugInfo">
+            Debug info will appear here...
+          </div>
+          
           <div class="audio-tips">
             🔊 <strong>Voice call active</strong> - Talk naturally!<br>
             💡 Everyone can speak and listen at the same time
@@ -507,6 +526,13 @@ app.get('/', (req, res) => {
         let isMuted = false;
         let currentUserName = '';
 
+        // Debug logging
+        function addDebug(message) {
+          const debugInfo = document.getElementById('debugInfo');
+          debugInfo.innerHTML = message + '<br>' + debugInfo.innerHTML;
+          console.log(message);
+        }
+
         // Check for room ID in URL
         const urlParams = new URLSearchParams(window.location.search);
         const roomFromUrl = urlParams.get('room');
@@ -521,6 +547,7 @@ app.get('/', (req, res) => {
 
         function createRoom() {
           const userName = getUserName();
+          addDebug('Creating room with name: ' + userName);
           socket.emit('create-room', { userName });
         }
 
@@ -529,6 +556,7 @@ app.get('/', (req, res) => {
           const userName = getUserName();
           
           if (roomId) {
+            addDebug('Joining room: ' + roomId + ' with name: ' + userName);
             socket.emit('join-room', { roomId, userName });
           } else {
             alert('Please enter a room ID');
@@ -560,7 +588,7 @@ app.get('/', (req, res) => {
 
         async function startVoiceCall() {
           try {
-            console.log('Starting voice call...');
+            addDebug('Starting voice call...');
             
             mediaStream = await navigator.mediaDevices.getUserMedia({ 
               audio: {
@@ -573,7 +601,7 @@ app.get('/', (req, res) => {
               } 
             });
             
-            console.log('Microphone access granted');
+            addDebug('Microphone access granted');
 
             const options = {
               audioBitsPerSecond: 128000,
@@ -593,7 +621,7 @@ app.get('/', (req, res) => {
             };
 
             mediaRecorder.start(100);
-            console.log('Voice call recording started');
+            addDebug('Voice call recording started');
             
           } catch (error) {
             console.error('Error starting voice call:', error);
@@ -611,7 +639,7 @@ app.get('/', (req, res) => {
             mediaStream = null;
           }
           
-          console.log('Voice call stopped');
+          addDebug('Voice call stopped');
         }
 
         function startRecording() {
@@ -671,6 +699,7 @@ app.get('/', (req, res) => {
         socket.on('room-created', (data) => {
           currentRoom = data.roomId;
           currentUserName = data.userName;
+          addDebug('Room created: ' + data.roomId + ' | You are: ' + data.userName);
           showRoomInfo(data.roomId, data.userName);
           startVoiceCall();
         });
@@ -678,6 +707,9 @@ app.get('/', (req, res) => {
         socket.on('room-joined', (data) => {
           currentRoom = data.roomId;
           currentUserName = data.userName;
+          addDebug('Room joined: ' + data.roomId + ' | You are: ' + data.userName);
+          addDebug('Received ' + data.users.length + ' users in room');
+          
           showRoomInfo(data.roomId, data.userName);
           document.getElementById('userCount').textContent = data.users.length;
           updateUsersList(data.users);
@@ -687,20 +719,24 @@ app.get('/', (req, res) => {
         socket.on('user-joined', (data) => {
           const userCount = parseInt(document.getElementById('userCount').textContent);
           document.getElementById('userCount').textContent = userCount + 1;
+          addDebug('User joined: ' + data.userName);
           addUserToList(data.userId, data.userName, false);
         });
 
         socket.on('user-left', (data) => {
           const userCount = parseInt(document.getElementById('userCount').textContent);
           document.getElementById('userCount').textContent = Math.max(1, userCount - 1);
+          addDebug('User left: ' + data.userName);
           removeUserFromList(data.userId);
         });
 
         socket.on('audio', (data) => {
+          addDebug('Received audio from: ' + data.fromName);
           playReceivedAudio(data.audioData);
         });
 
         socket.on('error', (data) => {
+          addDebug('Error: ' + data.message);
           alert('Error: ' + data.message);
         });
 
@@ -721,14 +757,12 @@ app.get('/', (req, res) => {
           const usersList = document.getElementById('usersList');
           usersList.innerHTML = '';
           
-          // Add current user first
-          addUserToList(socket.id, currentUserName, true);
+          addDebug('Updating user list with ' + users.length + ' users');
           
-          // Add other users
+          // Add all users from the complete list
           users.forEach(user => {
-            if (user.id !== socket.id) {
-              addUserToList(user.id, user.name, false);
-            }
+            const isCurrentUser = user.id === socket.id;
+            addUserToList(user.id, user.name, isCurrentUser);
           });
         }
 
@@ -749,6 +783,8 @@ app.get('/', (req, res) => {
           userItem.appendChild(avatar);
           userItem.appendChild(name);
           usersList.appendChild(userItem);
+          
+          addDebug('Added user to list: ' + userName + (isCurrentUser ? ' (You)' : ''));
         }
 
         function removeUserFromList(userId) {
@@ -791,7 +827,7 @@ server.listen(PORT, () => {
   console.log(`
 ✅ Server running on port ${PORT}
 🔗 http://localhost:${PORT}
-🎤 Real Voice Call with Custom Names
+🎤 Real Voice Call with Complete User Lists
 =========================================
 `);
 });
