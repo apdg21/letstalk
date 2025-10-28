@@ -143,11 +143,16 @@
     
     .call-status {
       padding: 15px;
-      background: #d4edda;
-      color: #155724;
+      background: #fff3cd;
+      color: #856404;
       border-radius: 10px;
       margin-bottom: 20px;
       font-weight: 600;
+    }
+    
+    .call-status.connected {
+      background: #d4edda;
+      color: #155724;
     }
     
     .users-list {
@@ -189,6 +194,19 @@
       background: #f8fff9;
     }
     
+    .user-audio-status {
+      margin-left: auto;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 12px;
+      background: #f8f9fa;
+    }
+    
+    .user-audio-connected {
+      background: #d4edda;
+      color: #155724;
+    }
+    
     .debug-info {
       margin-top: 10px;
       padding: 10px;
@@ -209,7 +227,7 @@
       margin-bottom: 20px;
     }
     
-    .mute-btn, .leave-btn {
+    .mute-btn, .leave-btn, .retry-btn {
       padding: 12px 20px;
       font-size: 16px;
       border-radius: 25px;
@@ -230,6 +248,11 @@
     
     .leave-btn {
       background: #dc3545;
+      color: white;
+    }
+    
+    .retry-btn {
+      background: #fd7e14;
       color: white;
     }
     
@@ -291,7 +314,9 @@
         <button class="mute-btn" id="muteButton" onclick="toggleMute()">
           🔇 Mute
         </button>
-        
+        <button class="retry-btn" onclick="retryConnections()">
+          🔄 Retry Connections
+        </button>
         <button class="leave-btn" onclick="leaveRoom()">
           📞 Leave Call
         </button>
@@ -307,11 +332,20 @@
     let isMuted = false;
     const peers = {};
     const remoteAudioElements = {};
+    const userConnections = new Map(); // Track connection states
+    
+    // Enhanced ICE servers configuration
     const config = { 
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ] 
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
+      ],
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
     };
 
     // Debug logging
@@ -362,6 +396,16 @@
       }
     }
 
+    function retryConnections() {
+      addDebug('Retrying all connections...');
+      Object.keys(peers).forEach(peerId => {
+        if (peers[peerId].connectionState !== 'connected') {
+          addDebug(`Retrying connection to: ${peerId}`);
+          createOffer(peerId);
+        }
+      });
+    }
+
     function toggleMute() {
       if (!localStream) return;
       
@@ -386,54 +430,92 @@
     async function setupLocalStream() {
       try {
         addDebug('Requesting microphone access...');
+        
+        // Stop existing stream if any
+        if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+        }
+        
         localStream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
+            autoGainControl: true,
+            channelCount: 1,
+            sampleRate: 48000
           },
           video: false
         });
-        addDebug('Microphone access granted');
+        
+        addDebug('✅ Microphone access granted - Stream active');
+        
+        // Update UI to show we have microphone
+        document.getElementById('callStatus').textContent = '✅ Microphone ready - Connecting...';
+        document.getElementById('callStatus').className = 'call-status';
+        
         return true;
       } catch (error) {
-        addDebug('Error accessing microphone: ' + error.message);
-        alert('Cannot access microphone. Please check permissions.');
+        addDebug('❌ Error accessing microphone: ' + error.message);
+        alert('Cannot access microphone. Please check permissions and try again.');
         return false;
       }
     }
 
-    function createPeerConnection(remoteId) {
-      if (peers[remoteId]) {
-        addDebug('Peer connection already exists for: ' + remoteId);
+    function createPeerConnection(remoteId, userName) {
+      if (peers[remoteId] && peers[remoteId].connectionState === 'connected') {
+        addDebug(`Peer connection already connected to: ${userName}`);
         return peers[remoteId];
       }
 
-      addDebug('Creating peer connection for: ' + remoteId);
+      // Close existing connection if it exists but isn't connected
+      if (peers[remoteId]) {
+        peers[remoteId].close();
+        delete peers[remoteId];
+      }
+
+      addDebug(`Creating peer connection for: ${userName} (${remoteId})`);
       const pc = new RTCPeerConnection(config);
+
+      // Track connection state
+      userConnections.set(remoteId, { connected: false, userName: userName });
 
       // Add local tracks
       if (localStream) {
         localStream.getTracks().forEach(track => {
-          pc.addTrack(track, localStream);
+          const sender = pc.addTrack(track, localStream);
+          addDebug(`Added ${track.kind} track to ${userName}`);
         });
-        addDebug('Added local tracks to peer: ' + remoteId);
+      } else {
+        addDebug('⚠️ No local stream available when creating peer connection');
       }
 
-      // Create audio element for remote stream
-      const audioElement = document.createElement('audio');
-      audioElement.autoplay = true;
-      audioElement.playsInline = true;
-      audioElement.style.display = 'none';
-      remoteAudioElements[remoteId] = audioElement;
-      document.body.appendChild(audioElement);
+      // Create and setup audio element for remote stream
+      let audioElement = remoteAudioElements[remoteId];
+      if (!audioElement) {
+        audioElement = document.createElement('audio');
+        audioElement.autoplay = true;
+        audioElement.playsInline = true;
+        audioElement.controls = false;
+        audioElement.style.display = 'none';
+        audioElement.setAttribute('muted', 'false');
+        remoteAudioElements[remoteId] = audioElement;
+        document.body.appendChild(audioElement);
+        
+        // Force play to handle autoplay restrictions
+        audioElement.play().catch(e => {
+          addDebug(`Autoplay prevented for ${userName}, user interaction required`);
+        });
+      }
 
       // Handle incoming tracks
       pc.ontrack = (event) => {
-        addDebug('Received remote track from: ' + remoteId);
+        addDebug(`📞 Received remote track from: ${userName}`);
         if (event.streams && event.streams[0]) {
           audioElement.srcObject = event.streams[0];
-          addDebug('Audio stream attached for: ' + remoteId);
+          addDebug(`✅ Audio stream attached for: ${userName}`);
+          
+          // Update UI to show audio is connected
+          updateUserAudioStatus(remoteId, true);
         }
       };
 
@@ -444,17 +526,40 @@
             to: remoteId,
             candidate: event.candidate
           });
+        } else {
+          addDebug(`✅ ICE gathering complete for: ${userName}`);
         }
       };
 
       // Handle connection state changes
       pc.onconnectionstatechange = () => {
-        addDebug(`Peer ${remoteId} connection state: ${pc.connectionState}`);
-        if (pc.connectionState === 'connected') {
-          document.getElementById('callStatus').textContent = '✅ Voice call connected - You can talk now!';
-          document.getElementById('callStatus').style.background = '#d4edda';
-          document.getElementById('callStatus').style.color = '#155724';
+        const state = pc.connectionState;
+        addDebug(`🔗 ${userName} connection state: ${state}`);
+        
+        if (state === 'connected') {
+          userConnections.set(remoteId, { connected: true, userName: userName });
+          updateUserAudioStatus(remoteId, true);
+          updateOverallConnectionStatus();
+        } else if (state === 'disconnected' || state === 'failed') {
+          userConnections.set(remoteId, { connected: false, userName: userName });
+          updateUserAudioStatus(remoteId, false);
+          updateOverallConnectionStatus();
+          
+          // Try to reconnect after 3 seconds if failed
+          if (state === 'failed') {
+            setTimeout(() => {
+              if (currentRoom && peers[remoteId] && peers[remoteId].connectionState !== 'connected') {
+                addDebug(`🔄 Attempting to reconnect to: ${userName}`);
+                createOffer(remoteId);
+              }
+            }, 3000);
+          }
         }
+      };
+
+      // Handle ICE connection state
+      pc.oniceconnectionstatechange = () => {
+        addDebug(`🧊 ${userName} ICE state: ${pc.iceConnectionState}`);
       };
 
       peers[remoteId] = pc;
@@ -462,59 +567,136 @@
     }
 
     async function createOffer(remoteId) {
-      const pc = createPeerConnection(remoteId);
+      const userName = userConnections.get(remoteId)?.userName || remoteId;
+      
+      // Ensure we have local stream first
+      if (!localStream) {
+        const success = await setupLocalStream();
+        if (!success) {
+          addDebug('❌ Cannot create offer without microphone access');
+          return;
+        }
+      }
+
+      const pc = createPeerConnection(remoteId, userName);
+      
       try {
-        addDebug('Creating offer for: ' + remoteId);
-        const offer = await pc.createOffer();
+        addDebug(`Creating offer for: ${userName}`);
+        
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: false
+        });
+        
         await pc.setLocalDescription(offer);
+        
         socket.emit('webrtc-offer', {
           to: remoteId,
           sdp: pc.localDescription
         });
-        addDebug('Offer sent to: ' + remoteId);
+        
+        addDebug(`✅ Offer sent to: ${userName}`);
       } catch (error) {
-        addDebug('Error creating offer: ' + error.message);
+        addDebug(`❌ Error creating offer for ${userName}: ${error.message}`);
       }
     }
 
     async function handleOffer(from, sdp) {
-      addDebug('Received offer from: ' + from);
-      const pc = createPeerConnection(from);
+      const userName = userConnections.get(from)?.userName || from;
+      addDebug(`Received offer from: ${userName}`);
+      
+      // Ensure we have local stream first
+      if (!localStream) {
+        const success = await setupLocalStream();
+        if (!success) {
+          addDebug('❌ Cannot handle offer without microphone access');
+          return;
+        }
+      }
+
+      const pc = createPeerConnection(from, userName);
+      
       try {
         await pc.setRemoteDescription(sdp);
+        addDebug(`✅ Remote description set for: ${userName}`);
+        
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+        
         socket.emit('webrtc-answer', {
           to: from,
           sdp: pc.localDescription
         });
-        addDebug('Answer sent to: ' + from);
+        
+        addDebug(`✅ Answer sent to: ${userName}`);
       } catch (error) {
-        addDebug('Error handling offer: ' + error.message);
+        addDebug(`❌ Error handling offer from ${userName}: ${error.message}`);
       }
     }
 
     async function handleAnswer(from, sdp) {
-      addDebug('Received answer from: ' + from);
+      const userName = userConnections.get(from)?.userName || from;
+      addDebug(`Received answer from: ${userName}`);
       const pc = peers[from];
+      
       if (pc) {
         try {
           await pc.setRemoteDescription(sdp);
-          addDebug('Remote description set for: ' + from);
+          addDebug(`✅ Remote description set from answer for: ${userName}`);
         } catch (error) {
-          addDebug('Error handling answer: ' + error.message);
+          addDebug(`❌ Error handling answer from ${userName}: ${error.message}`);
         }
+      } else {
+        addDebug(`❌ No peer connection found for: ${userName}`);
       }
     }
 
     async function handleIceCandidate(from, candidate) {
-      addDebug('Received ICE candidate from: ' + from);
+      const userName = userConnections.get(from)?.userName || from;
       const pc = peers[from];
+      
       if (pc) {
         try {
           await pc.addIceCandidate(candidate);
+          addDebug(`✅ ICE candidate added for: ${userName}`);
         } catch (error) {
-          addDebug('Error adding ICE candidate: ' + error.message);
+          addDebug(`❌ Error adding ICE candidate for ${userName}: ${error.message}`);
+        }
+      }
+    }
+
+    function updateUserAudioStatus(userId, isConnected) {
+      const userElement = document.getElementById(`user-${userId}`);
+      if (userElement) {
+        let statusElement = userElement.querySelector('.user-audio-status');
+        if (!statusElement) {
+          statusElement = document.createElement('div');
+          statusElement.className = 'user-audio-status';
+          userElement.appendChild(statusElement);
+        }
+        
+        if (isConnected) {
+          statusElement.textContent = '🔊 Connected';
+          statusElement.className = 'user-audio-status user-audio-connected';
+        } else {
+          statusElement.textContent = '🔇 Connecting...';
+          statusElement.className = 'user-audio-status';
+        }
+      }
+    }
+
+    function updateOverallConnectionStatus() {
+      const connectedCount = Array.from(userConnections.values()).filter(conn => conn.connected).length;
+      const totalCount = userConnections.size;
+      
+      if (totalCount > 0) {
+        const callStatus = document.getElementById('callStatus');
+        if (connectedCount === totalCount) {
+          callStatus.textContent = `✅ All connections working (${connectedCount}/${totalCount})`;
+          callStatus.className = 'call-status connected';
+        } else {
+          callStatus.textContent = `🔄 Connecting... (${connectedCount}/${totalCount} users)`;
+          callStatus.className = 'call-status';
         }
       }
     }
@@ -522,7 +704,9 @@
     function cleanup() {
       // Close all peer connections
       Object.keys(peers).forEach(peerId => {
-        peers[peerId].close();
+        if (peers[peerId]) {
+          peers[peerId].close();
+        }
         delete peers[peerId];
       });
 
@@ -534,63 +718,67 @@
         delete remoteAudioElements[audioId];
       });
 
+      // Clear connection tracking
+      userConnections.clear();
+
       // Stop local stream
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
       }
 
-      addDebug('Cleaned up all connections');
+      addDebug('🧹 Cleaned up all connections');
     }
 
     // Socket event handlers
     socket.on('room-created', async (data) => {
       currentRoom = data.roomId;
-      addDebug('Room created: ' + data.roomId);
+      addDebug('✅ Room created: ' + data.roomId);
       showRoomInfo(data.roomId, data.userName);
       
-      // Setup local stream
-      const success = await setupLocalStream();
-      if (success) {
-        document.getElementById('callStatus').textContent = '✅ Waiting for others to join...';
-      }
+      // Setup local stream immediately
+      await setupLocalStream();
     });
 
     socket.on('room-joined', async (data) => {
       currentRoom = data.roomId;
-      addDebug('Room joined: ' + data.roomId + ' with ' + data.users.length + ' users');
+      addDebug(`✅ Room joined: ${data.roomId} with ${data.users.length} users`);
       showRoomInfo(data.roomId, data.userName);
       updateUsersList(data.users);
       
       // Setup local stream
-      const success = await setupLocalStream();
-      if (success) {
-        // Create offers to all existing users
-        data.users.forEach(user => {
-          if (user.id !== socket.id) {
-            setTimeout(() => createOffer(user.id), 1000);
-          }
-        });
-      }
+      await setupLocalStream();
+      
+      // Create offers to all existing users with delay to ensure stream is ready
+      data.users.forEach((user, index) => {
+        if (user.id !== socket.id) {
+          userConnections.set(user.id, { connected: false, userName: user.name });
+          setTimeout(() => createOffer(user.id), 1000 + (index * 500)); // Stagger connections
+        }
+      });
     });
 
     socket.on('user-joined', (data) => {
-      addDebug('User joined: ' + data.userName);
+      addDebug(`👤 User joined: ${data.userName}`);
       addUserToList(data.userId, data.userName, false);
       updateUserCount();
       
-      // Create offer to the new user
+      // Track the new user
+      userConnections.set(data.userId, { connected: false, userName: data.userName });
+      
+      // Create offer to the new user after a delay
       if (localStream) {
         setTimeout(() => createOffer(data.userId), 1000);
       }
     });
 
     socket.on('user-left', (data) => {
-      addDebug('User left: ' + data.userName);
+      addDebug(`👤 User left: ${data.userName}`);
       removeUserFromList(data.userId);
       updateUserCount();
       
-      // Clean up peer connection
+      // Clean up
+      userConnections.delete(data.userId);
       if (peers[data.userId]) {
         peers[data.userId].close();
         delete peers[data.userId];
@@ -601,6 +789,8 @@
         }
         delete remoteAudioElements[data.userId];
       }
+      
+      updateOverallConnectionStatus();
     });
 
     // WebRTC signaling
@@ -617,7 +807,7 @@
     });
 
     socket.on('error', (data) => {
-      addDebug('Error: ' + data.message);
+      addDebug('❌ Error: ' + data.message);
       alert('Error: ' + data.message);
     });
 
@@ -637,6 +827,11 @@
       users.forEach(user => {
         const isCurrentUser = user.id === socket.id;
         addUserToList(user.id, user.name, isCurrentUser);
+        
+        // Track all users
+        if (!isCurrentUser) {
+          userConnections.set(user.id, { connected: false, userName: user.name });
+        }
       });
       updateUserCount();
     }
@@ -658,6 +853,11 @@
       userItem.appendChild(avatar);
       userItem.appendChild(name);
       usersList.appendChild(userItem);
+      
+      // Add connection status for remote users
+      if (!isCurrentUser) {
+        updateUserAudioStatus(userId, false);
+      }
     }
 
     function removeUserFromList(userId) {
