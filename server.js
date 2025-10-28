@@ -27,27 +27,16 @@ console.log('🚀 Starting Real Voice Call Server...');
 const rooms = new Map();
 const userNames = new Map(); // socket.id -> username
 
-// Generate random user names
-function generateUserName() {
-  const adjectives = ['Happy', 'Clever', 'Brave', 'Swift', 'Gentle', 'Witty', 'Calm', 'Proud', 'Lucky', 'Smart'];
-  const animals = ['Tiger', 'Eagle', 'Dolphin', 'Fox', 'Lion', 'Owl', 'Wolf', 'Bear', 'Hawk', 'Falcon'];
-  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const animal = animals[Math.floor(Math.random() * animals.length)];
-  return `${adjective} ${animal}`;
-}
-
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('🔌 User connected:', socket.id);
 
-  // Assign a random name to the user
-  const userName = generateUserName();
-  userNames.set(socket.id, userName);
-  console.log(`👤 User ${socket.id} assigned name: ${userName}`);
-
-  // Create a new room
-  socket.on('create-room', () => {
+  // Create a new room with user name
+  socket.on('create-room', (data) => {
+    const { userName } = data;
     const roomId = generateRoomId();
+    
+    userNames.set(socket.id, userName || 'Anonymous');
     rooms.set(roomId, {
       users: [socket.id],
       creator: socket.id,
@@ -57,13 +46,14 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.emit('room-created', { 
       roomId,
-      userName: userName
+      userName: userNames.get(socket.id)
     });
-    console.log(`🎪 Room created: ${roomId} by ${userName}`);
+    console.log(`🎪 Room created: ${roomId} by ${userNames.get(socket.id)}`);
   });
 
-  // Join an existing room
-  socket.on('join-room', (roomId) => {
+  // Join an existing room with user name
+  socket.on('join-room', (data) => {
+    const { roomId, userName } = data;
     const room = rooms.get(roomId);
     
     if (!room) {
@@ -76,6 +66,7 @@ io.on('connection', (socket) => {
       return;
     }
 
+    userNames.set(socket.id, userName || 'Anonymous');
     room.users.push(socket.id);
     socket.join(roomId);
     
@@ -88,17 +79,17 @@ io.on('connection', (socket) => {
     // Notify others in the room
     socket.to(roomId).emit('user-joined', { 
       userId: socket.id,
-      userName: userName
+      userName: userNames.get(socket.id)
     });
     
     socket.emit('room-joined', { 
       roomId, 
       users: userNamesInRoom,
-      userName: userName,
+      userName: userNames.get(socket.id),
       isCreator: room.creator === socket.id
     });
     
-    console.log(`👥 ${userName} joined room ${roomId}`);
+    console.log(`👥 ${userNames.get(socket.id)} joined room ${roomId}`);
   });
 
   // Handle audio transmission
@@ -212,6 +203,32 @@ app.get('/', (req, res) => {
           color: #666; 
           margin-bottom: 25px;
           font-size: 1rem;
+        }
+        
+        .name-section {
+          margin-bottom: 20px;
+          text-align: left;
+        }
+        
+        .name-label {
+          display: block;
+          margin-bottom: 8px;
+          font-weight: 600;
+          color: #333;
+        }
+        
+        .name-input {
+          width: 100%;
+          padding: 12px 15px;
+          border: 2px solid #ddd;
+          border-radius: 10px;
+          font-size: 16px;
+          outline: none;
+          margin-bottom: 15px;
+        }
+        
+        .name-input:focus {
+          border-color: #667eea;
         }
         
         .button-group {
@@ -424,23 +441,17 @@ app.get('/', (req, res) => {
             font-size: 14px;
           }
         }
-        
-        /* Very small screens */
-        @media (max-width: 360px) {
-          .container {
-            padding: 15px;
-          }
-          
-          h1 {
-            font-size: 1.3rem;
-          }
-        }
       </style>
     </head>
     <body>
       <div class="container">
         <h1>🎤 Real Voice Call</h1>
         <p class="subtitle">Create a room and start talking naturally</p>
+        
+        <div class="name-section">
+          <label class="name-label" for="userNameInput">Your Name:</label>
+          <input type="text" id="userNameInput" class="name-input" placeholder="Enter your name" maxlength="20" value="">
+        </div>
         
         <div class="button-group" id="setup">
           <button class="create-btn" onclick="createRoom()">Create New Room</button>
@@ -501,17 +512,24 @@ app.get('/', (req, res) => {
         const roomFromUrl = urlParams.get('room');
         if (roomFromUrl) {
           document.getElementById('roomInput').value = roomFromUrl;
-          joinRoom();
+        }
+
+        function getUserName() {
+          const userNameInput = document.getElementById('userNameInput');
+          return userNameInput.value.trim() || 'Anonymous';
         }
 
         function createRoom() {
-          socket.emit('create-room');
+          const userName = getUserName();
+          socket.emit('create-room', { userName });
         }
 
         function joinRoom() {
           const roomId = document.getElementById('roomInput').value.trim();
+          const userName = getUserName();
+          
           if (roomId) {
-            socket.emit('join-room', roomId);
+            socket.emit('join-room', { roomId, userName });
           } else {
             alert('Please enter a room ID');
           }
@@ -717,7 +735,7 @@ app.get('/', (req, res) => {
         function addUserToList(userId, userName, isCurrentUser) {
           const usersList = document.getElementById('usersList');
           const userItem = document.createElement('div');
-          userItem.className = `user-item ${isCurrentUser ? 'user-you' : ''}`;
+          userItem.className = 'user-item ' + (isCurrentUser ? 'user-you' : '');
           userItem.id = 'user-' + userId;
           
           const avatar = document.createElement('div');
@@ -726,7 +744,7 @@ app.get('/', (req, res) => {
           
           const name = document.createElement('div');
           name.className = 'user-name';
-          name.textContent = `${userName} ${isCurrentUser ? '(You)' : ''}`;
+          name.textContent = userName + (isCurrentUser ? ' (You)' : '');
           
           userItem.appendChild(avatar);
           userItem.appendChild(name);
@@ -751,6 +769,11 @@ app.get('/', (req, res) => {
         window.addEventListener('beforeunload', () => {
           stopVoiceCall();
         });
+
+        // Focus on name input when page loads
+        window.addEventListener('load', () => {
+          document.getElementById('userNameInput').focus();
+        });
       </script>
     </body>
     </html>
@@ -768,7 +791,7 @@ server.listen(PORT, () => {
   console.log(`
 ✅ Server running on port ${PORT}
 🔗 http://localhost:${PORT}
-🎤 Real Voice Call with User Names
+🎤 Real Voice Call with Custom Names
 =========================================
 `);
 });
