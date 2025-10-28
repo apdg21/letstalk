@@ -25,13 +25,12 @@ console.log('🚀 Starting Real Voice Call Server...');
 
 // In-memory storage for rooms and user names
 const rooms = new Map();
-const userNames = new Map(); // socket.id -> username
+const userNames = new Map();
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('🔌 User connected:', socket.id);
 
-  // Create a new room with user name
   socket.on('create-room', (data) => {
     const { userName } = data;
     const roomId = generateRoomId();
@@ -51,7 +50,6 @@ io.on('connection', (socket) => {
     console.log(`🎪 Room created: ${roomId} by ${userNames.get(socket.id)}`);
   });
 
-  // Join an existing room with user name
   socket.on('join-room', (data) => {
     const { roomId, userName } = data;
     const room = rooms.get(roomId);
@@ -70,7 +68,6 @@ io.on('connection', (socket) => {
     room.users.push(socket.id);
     socket.join(roomId);
     
-    // Get COMPLETE list of all users in the room with their names
     const userNamesInRoom = room.users.map(userId => ({
       id: userId,
       name: userNames.get(userId)
@@ -78,15 +75,13 @@ io.on('connection', (socket) => {
     
     console.log(`👥 ${userNames.get(socket.id)} joining room ${roomId}. Current users:`, userNamesInRoom.map(u => u.name));
 
-    // FIRST: Notify the NEW USER with complete user list
     socket.emit('room-joined', { 
       roomId, 
-      users: userNamesInRoom, // Send complete list including existing users
+      users: userNamesInRoom,
       userName: userNames.get(socket.id),
       isCreator: room.creator === socket.id
     });
     
-    // THEN: Notify EXISTING USERS about the new user
     socket.to(roomId).emit('user-joined', { 
       userId: socket.id,
       userName: userNames.get(socket.id)
@@ -95,11 +90,9 @@ io.on('connection', (socket) => {
     console.log(`👥 ${userNames.get(socket.id)} joined room ${roomId}`);
   });
 
-  // Handle audio transmission
   socket.on('audio', (data) => {
     const { roomId, audioData } = data;
     
-    // Broadcast to everyone in the room except sender
     socket.to(roomId).emit('audio', {
       from: socket.id,
       fromName: userNames.get(socket.id),
@@ -107,7 +100,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle user leaving
   socket.on('leave-room', (roomId) => {
     socket.leave(roomId);
     const room = rooms.get(roomId);
@@ -124,7 +116,6 @@ io.on('connection', (socket) => {
       }
     }
     
-    // Clean up user name
     userNames.delete(socket.id);
   });
 
@@ -321,28 +312,46 @@ app.get('/', (req, res) => {
           color: #004085;
         }
         
+        .control-buttons {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 10px;
+          margin-bottom: 20px;
+        }
+        
+        .mute-btn, .speaker-btn, .leave-btn {
+          padding: 12px 20px;
+          font-size: 16px;
+          border-radius: 25px;
+          border: none;
+          cursor: pointer;
+          transition: all 0.3s;
+          min-width: 120px;
+        }
+        
         .mute-btn {
           background: #6c757d;
           color: white;
-          padding: 12px 25px;
-          font-size: 16px;
-          border-radius: 25px;
-          margin: 8px;
-          min-width: 100px;
         }
         
         .mute-btn.muted {
           background: #e74c3c;
         }
         
+        .speaker-btn {
+          background: #3498db;
+          color: white;
+        }
+        
+        .speaker-btn.active {
+          background: #2980b9;
+          transform: scale(1.05);
+        }
+        
         .leave-btn {
           background: #dc3545;
           color: white;
-          padding: 12px 25px;
-          font-size: 16px;
-          border-radius: 25px;
-          margin: 8px;
-          min-width: 100px;
         }
         
         .user-count { 
@@ -422,6 +431,27 @@ app.get('/', (req, res) => {
           overflow-y: auto;
         }
         
+        .audio-mode {
+          margin-top: 10px;
+          padding: 8px 15px;
+          border-radius: 15px;
+          font-size: 14px;
+          font-weight: 600;
+          display: inline-block;
+        }
+        
+        .mode-earpiece {
+          background: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        
+        .mode-speaker {
+          background: #fff3cd;
+          color: #856404;
+          border: 1px solid #ffeaa7;
+        }
+        
         /* Mobile improvements */
         @media (max-width: 480px) {
           .container {
@@ -455,6 +485,16 @@ app.get('/', (req, res) => {
             padding: 8px 12px;
             font-size: 14px;
           }
+          
+          .control-buttons {
+            flex-direction: column;
+            align-items: center;
+          }
+          
+          .mute-btn, .speaker-btn, .leave-btn {
+            width: 100%;
+            max-width: 200px;
+          }
         }
       </style>
     </head>
@@ -486,12 +526,12 @@ app.get('/', (req, res) => {
           </div>
           
           <div class="debug-info" id="debugInfo">
-            Debug info will appear here...
+            Audio mode: <span id="audioModeText">Earpiece</span>
           </div>
           
           <div class="audio-tips">
             🔊 <strong>Voice call active</strong> - Talk naturally!<br>
-            💡 Everyone can speak and listen at the same time
+            💡 Switch between speaker and earpiece as needed
           </div>
         </div>
         
@@ -500,9 +540,17 @@ app.get('/', (req, res) => {
             🎤 Voice call active - You can talk freely!
           </div>
           
-          <div>
+          <div class="audio-mode mode-earpiece" id="audioModeIndicator">
+            🔊 Audio: Earpiece
+          </div>
+          
+          <div class="control-buttons">
             <button class="mute-btn" id="muteButton" onclick="toggleMute()">
               🔇 Mute
+            </button>
+            
+            <button class="speaker-btn" id="speakerButton" onclick="toggleSpeaker()">
+              🔈 Switch to Speaker
             </button>
             
             <button class="leave-btn" onclick="leaveRoom()">
@@ -511,8 +559,8 @@ app.get('/', (req, res) => {
           </div>
           
           <div class="audio-tips">
-            🎧 Use headphones for best audio quality<br>
-            🗣️ Speak naturally - no buttons to press!
+            🎧 <strong>Earpiece</strong>: Private listening (like phone calls)<br>
+            🔊 <strong>Speaker</strong>: Loud for groups (like walkie-talkie)
           </div>
         </div>
       </div>
@@ -524,12 +572,13 @@ app.get('/', (req, res) => {
         let mediaRecorder = null;
         let mediaStream = null;
         let isMuted = false;
+        let useSpeaker = false;
         let currentUserName = '';
 
         // Debug logging
         function addDebug(message) {
           const debugInfo = document.getElementById('debugInfo');
-          debugInfo.innerHTML = message + '<br>' + debugInfo.innerHTML;
+          debugInfo.innerHTML = 'Audio mode: <span id="audioModeText">' + (useSpeaker ? 'Speaker' : 'Earpiece') + '</span><br>' + message;
           console.log(message);
         }
 
@@ -579,10 +628,32 @@ app.get('/', (req, res) => {
             muteButton.textContent = '🔊 Unmute';
             muteButton.classList.add('muted');
             stopRecording();
+            addDebug('Microphone muted');
           } else {
             muteButton.textContent = '🔇 Mute';
             muteButton.classList.remove('muted');
             startRecording();
+            addDebug('Microphone unmuted');
+          }
+        }
+
+        function toggleSpeaker() {
+          useSpeaker = !useSpeaker;
+          const speakerButton = document.getElementById('speakerButton');
+          const audioModeIndicator = document.getElementById('audioModeIndicator');
+          
+          if (useSpeaker) {
+            speakerButton.textContent = '📱 Switch to Earpiece';
+            speakerButton.classList.add('active');
+            audioModeIndicator.textContent = '🔊 Audio: Speaker';
+            audioModeIndicator.className = 'audio-mode mode-speaker';
+            addDebug('Switched to Speaker mode');
+          } else {
+            speakerButton.textContent = '🔈 Switch to Speaker';
+            speakerButton.classList.remove('active');
+            audioModeIndicator.textContent = '🔊 Audio: Earpiece';
+            audioModeIndicator.className = 'audio-mode mode-earpiece';
+            addDebug('Switched to Earpiece mode');
           }
         }
 
@@ -675,23 +746,36 @@ app.get('/', (req, res) => {
             const audioUrl = URL.createObjectURL(audioBlob);
             const audio = new Audio(audioUrl);
             
-            audio.setAttribute('playsinline', 'false');
-            audio.setAttribute('webkit-playsinline', 'false');
-            audio.volume = 1.0;
+            if (useSpeaker) {
+              // Force speaker output
+              audio.setAttribute('playsinline', 'false');
+              audio.setAttribute('webkit-playsinline', 'false');
+              document.body.appendChild(audio);
+              addDebug('Playing through speaker');
+            } else {
+              // Use earpiece/default
+              audio.setAttribute('playsinline', 'true');
+              audio.setAttribute('webkit-playsinline', 'true');
+              addDebug('Playing through earpiece');
+            }
             
-            document.body.appendChild(audio);
+            audio.volume = 1.0;
             
             audio.play().catch(error => {
               console.log('Audio play failed:', error);
+              addDebug('Audio play error: ' + error.message);
             });
             
             audio.onended = () => {
-              document.body.removeChild(audio);
+              if (useSpeaker) {
+                document.body.removeChild(audio);
+              }
               URL.revokeObjectURL(audioUrl);
             };
             
           } catch (error) {
             console.error('Error playing audio:', error);
+            addDebug('Audio error: ' + error.message);
           }
         }
 
@@ -759,7 +843,6 @@ app.get('/', (req, res) => {
           
           addDebug('Updating user list with ' + users.length + ' users');
           
-          // Add all users from the complete list
           users.forEach(user => {
             const isCurrentUser = user.id === socket.id;
             addUserToList(user.id, user.name, isCurrentUser);
@@ -800,6 +883,11 @@ app.get('/', (req, res) => {
           document.getElementById('callControls').style.display = 'none';
           currentRoom = null;
           currentUserName = '';
+          // Reset audio mode
+          useSpeaker = false;
+          const speakerButton = document.getElementById('speakerButton');
+          speakerButton.textContent = '🔈 Switch to Speaker';
+          speakerButton.classList.remove('active');
         }
 
         window.addEventListener('beforeunload', () => {
@@ -827,7 +915,7 @@ server.listen(PORT, () => {
   console.log(`
 ✅ Server running on port ${PORT}
 🔗 http://localhost:${PORT}
-🎤 Real Voice Call with Complete User Lists
+🎤 Real Voice Call with Speaker/Earpiece Toggle
 =========================================
 `);
 });
