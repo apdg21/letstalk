@@ -1,5 +1,5 @@
 {
-  "name": "simple-walkie-talkie",
+  "name": "real-voice-call",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
