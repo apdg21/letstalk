@@ -12,6 +12,7 @@
     .controls { margin-top:12px; display:none; }
     .users { text-align:left; margin-top:8px; max-height:120px; overflow:auto; }
     .user { padding:8px; border-radius:8px; background:#f6f9ff; margin-bottom:6px; }
+    .debug { margin-top:10px; padding:8px; background:#f0f0f0; border-radius:6px; font-size:12px; text-align:left; max-height:100px; overflow-y:auto; }
   </style>
 </head>
 <body>
@@ -26,6 +27,7 @@
       <div>Room: <strong id="roomIdDisplay"></strong></div>
       <div class="users" id="usersList"></div>
       <button id="leaveBtn">Leave Room</button>
+      <div class="debug" id="debugInfo">Debug info will appear here...</div>
     </div>
   </div>
 
@@ -47,6 +49,13 @@
     const roomIdDisplay = document.getElementById('roomIdDisplay');
     const usersList = document.getElementById('usersList');
     const leaveBtn = document.getElementById('leaveBtn');
+    const debugInfo = document.getElementById('debugInfo');
+
+    function addDebug(message) {
+      debugInfo.innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + message + '</div>';
+      debugInfo.scrollTop = debugInfo.scrollHeight;
+      console.log(message);
+    }
 
     createBtn.onclick = () => {
       const name = userNameInput.value.trim() || 'Anonymous';
@@ -67,15 +76,24 @@
       currentRoom = null;
       controls.style.display = 'none';
       roomInput.value = '';
+      addDebug('Left room');
     };
 
     // Get microphone stream (called once when joining/creating)
     async function ensureLocalStream() {
       if (localStream) return localStream;
       try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        localStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: { 
+            echoCancellation: true, 
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        });
+        addDebug('Microphone access granted');
         return localStream;
       } catch (err) {
+        addDebug('Microphone error: ' + err.message);
         alert('Microphone access denied or unavailable: ' + err.message);
         throw err;
       }
@@ -86,40 +104,56 @@
 
       const pc = new RTCPeerConnection(config);
 
+      // Create audio element immediately and add to DOM
+      const audioEl = document.createElement('audio');
+      audioEl.autoplay = true;
+      audioEl.playsInline = true;
+      audioEl.muted = false;
+      audioEl.style.display = 'none'; // Hide but keep in DOM
+      remoteAudioEls[remoteId] = audioEl;
+      
+      // Add to DOM immediately for autoplay
+      document.body.appendChild(audioEl);
+      addDebug('Created audio element for: ' + remoteId);
+
       // Add local tracks
       if (localStream) {
         for (const track of localStream.getTracks()) {
           pc.addTrack(track, localStream);
         }
+        addDebug('Added local tracks to peer: ' + remoteId);
       }
 
-      // Create audio element for this remote
-      const audioEl = document.createElement('audio');
-      audioEl.autoplay = true;
-      audioEl.playsInline = true;
-      remoteAudioEls[remoteId] = audioEl;
-
       pc.ontrack = (ev) => {
+        addDebug('Received remote track from: ' + remoteId);
         // attach the incoming stream to the audio element
         if (ev.streams && ev.streams[0]) {
           audioEl.srcObject = ev.streams[0];
+          addDebug('Attached stream to audio element for: ' + remoteId);
         } else if (ev.track) {
           // fallback for some browsers
           const incomingStream = new MediaStream([ev.track]);
           audioEl.srcObject = incomingStream;
+          addDebug('Attached track to audio element for: ' + remoteId);
         }
       };
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('webrtc-ice-candidate', { to: remoteId, candidate: event.candidate });
+          addDebug('Sent ICE candidate to: ' + remoteId);
         }
       };
 
       pc.onconnectionstatechange = () => {
+        addDebug('Peer ' + remoteId + ' connection state: ' + pc.connectionState);
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
           removePeer(remoteId);
         }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        addDebug('Peer ' + remoteId + ' ICE state: ' + pc.iceConnectionState);
       };
 
       peers[remoteId] = pc;
@@ -132,12 +166,15 @@
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit('webrtc-offer', { to: remoteId, sdp: pc.localDescription });
+        addDebug('Sent offer to: ' + remoteId);
       } catch (err) {
         console.error('Offer error', err);
+        addDebug('Offer error to ' + remoteId + ': ' + err.message);
       }
     }
 
     async function handleOffer(from, sdp) {
+      addDebug('Received offer from: ' + from);
       await ensureLocalStream();
       const pc = createPeerConnection(from);
       try {
@@ -145,27 +182,36 @@
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('webrtc-answer', { to: from, sdp: pc.localDescription });
+        addDebug('Sent answer to: ' + from);
       } catch (err) {
         console.error('Handle offer error', err);
+        addDebug('Handle offer error from ' + from + ': ' + err.message);
       }
     }
 
     async function handleAnswer(from, sdp) {
+      addDebug('Received answer from: ' + from);
       const pc = peers[from];
       if (!pc) {
-        console.warn('Answer from unknown peer', from);
+        addDebug('Answer from unknown peer: ' + from);
         return;
       }
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      addDebug('Set remote description for: ' + from);
     }
 
     async function handleRemoteIce(from, candidate) {
       const pc = peers[from];
-      if (!pc) return;
+      if (!pc) {
+        addDebug('ICE candidate from unknown peer: ' + from);
+        return;
+      }
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        addDebug('Added ICE candidate from: ' + from);
       } catch (err) {
         console.warn('Failed to add ICE candidate', err);
+        addDebug('ICE candidate error from ' + from + ': ' + err.message);
       }
     }
 
@@ -173,23 +219,15 @@
       const el = document.createElement('div');
       el.id = 'user-' + id;
       el.className = 'user';
-      el.textContent = (name || 'User') + (id === socket.id ? ' (You)' : '') + ' — ' + id;
+      el.textContent = (name || 'User') + (id === socket.id ? ' (You)' : '');
       usersList.appendChild(el);
+      addDebug('Added user to UI: ' + name);
     }
 
     function removeRemoteUserFromUI(id) {
       const el = document.getElementById('user-' + id);
       if (el) el.remove();
-    }
-
-    function attachRemoteAudioToUI(remoteId) {
-      // append audio element to users list so it can autoplay with a user gesture
-      const audioEl = remoteAudioEls[remoteId];
-      if (!audioEl) return;
-      const userDiv = document.getElementById('user-' + remoteId);
-      if (userDiv && !userDiv.contains(audioEl)) {
-        userDiv.appendChild(audioEl);
-      }
+      addDebug('Removed user from UI: ' + id);
     }
 
     function removePeer(remoteId) {
@@ -197,12 +235,16 @@
       if (pc) {
         try { pc.close(); } catch (e) {}
         delete peers[remoteId];
+        addDebug('Closed peer connection: ' + remoteId);
       }
       const audioEl = remoteAudioEls[remoteId];
       if (audioEl) {
-        try { audioEl.srcObject = null; } catch (e) {}
-        if (audioEl.parentNode) audioEl.parentNode.removeChild(audioEl);
+        try { 
+          audioEl.srcObject = null; 
+          if (audioEl.parentNode) audioEl.parentNode.removeChild(audioEl);
+        } catch (e) {}
         delete remoteAudioEls[remoteId];
+        addDebug('Removed audio element: ' + remoteId);
       }
       removeRemoteUserFromUI(remoteId);
     }
@@ -215,6 +257,7 @@
       if (localStream) {
         localStream.getTracks().forEach(t => t.stop());
         localStream = null;
+        addDebug('Stopped local stream');
       }
     }
 
@@ -228,7 +271,7 @@
 
       // get microphone ready for when others join
       await ensureLocalStream();
-      // (no peers yet)
+      addDebug('Room created: ' + currentRoom);
     });
 
     socket.on('room-joined', async (data) => {
@@ -242,6 +285,8 @@
 
       // Add all users in room to UI
       const users = data.users || [];
+      addDebug('Room joined. Total users: ' + users.length);
+      
       for (const u of users) {
         addRemoteUserToUI(u.id, u.name);
       }
@@ -249,54 +294,57 @@
       // For each other user, create an offer to them
       for (const u of users) {
         if (u.id === socket.id) continue;
-        // create audio element placeholder and then makeOffer
+        addDebug('Creating offer for: ' + u.name);
         createPeerConnection(u.id);
-        attachRemoteAudioToUI(u.id);
-        makeOffer(u.id);
+        setTimeout(() => {
+          makeOffer(u.id);
+        }, 500);
       }
     });
 
     socket.on('user-joined', async (data) => {
       const { userId, userName } = data;
+      addDebug('User joined: ' + userName);
       addRemoteUserToUI(userId, userName);
+      
       // existing clients should initiate offer to the newcomer
-      createPeerConnection(userId);
-      attachRemoteAudioToUI(userId);
-      // small delay to ensure new user is ready
-      setTimeout(() => {
-        makeOffer(userId);
-      }, 250);
+      if (userId !== socket.id) {
+        createPeerConnection(userId);
+        setTimeout(() => {
+          makeOffer(userId);
+        }, 500);
+      }
     });
 
     socket.on('user-left', (data) => {
       const { userId } = data;
+      addDebug('User left: ' + userId);
       removePeer(userId);
     });
 
     // WebRTC signaling message handlers
     socket.on('webrtc-offer', async (data) => {
       const { from, sdp } = data;
+      addDebug('Received WebRTC offer from: ' + from);
       await ensureLocalStream();
       handleOffer(from, sdp);
-      // Attach audio element (UI)
-      addRemoteUserToUI(from, 'Remote');
-      attachRemoteAudioToUI(from);
     });
 
     socket.on('webrtc-answer', async (data) => {
       const { from, sdp } = data;
+      addDebug('Received WebRTC answer from: ' + from);
       await handleAnswer(from, sdp);
-      attachRemoteAudioToUI(from);
     });
 
     socket.on('webrtc-ice-candidate', async (data) => {
       const { from, candidate } = data;
+      addDebug('Received ICE candidate from: ' + from);
       await handleRemoteIce(from, candidate);
     });
 
-    // optional legacy audio handler (if you keep it)
-    socket.on('audio', (data) => {
-      console.log('legacy audio event received (ignored in WebRTC flow).');
+    socket.on('error', (data) => {
+      addDebug('Error: ' + data.message);
+      alert('Error: ' + data.message);
     });
 
     window.addEventListener('beforeunload', () => {
@@ -304,6 +352,25 @@
         socket.emit('leave-room', currentRoom);
       }
     });
+
+    // Debug function to check audio elements
+    function debugAudioElements() {
+      addDebug('=== AUDIO DEBUG ===');
+      addDebug('Local stream: ' + (localStream ? 'Active' : 'None'));
+      addDebug('Remote audio elements: ' + Object.keys(remoteAudioEls).length);
+      
+      Object.keys(remoteAudioEls).forEach(id => {
+        const audio = remoteAudioEls[id];
+        addDebug(`Audio ${id}: srcObject=${audio.srcObject ? 'Yes' : 'No'}, parent=${audio.parentNode ? 'In DOM' : 'No parent'}`);
+      });
+    }
+
+    // Add debug button for testing
+    const debugBtn = document.createElement('button');
+    debugBtn.textContent = 'Debug Audio';
+    debugBtn.onclick = debugAudioElements;
+    debugBtn.style.marginTop = '10px';
+    controls.appendChild(debugBtn);
   </script>
 </body>
 </html>
