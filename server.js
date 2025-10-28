@@ -194,7 +194,7 @@ app.get('/', (req, res) => {
           box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
         }
         
-        .join-section { display: flex; gap: 10px; }
+        .join-section { display: flex; gap: 10px; flex-direction: column; }
         
         input {
           flex: 1;
