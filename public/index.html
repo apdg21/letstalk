@@ -324,9 +324,14 @@
     </div>
   </div>
 
-  <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
+    // Backend (Render) server URL — since the frontend is now hosted separately
+    // on Cloudflare Pages, we must point socket.io at the Render backend explicitly.
+    const BACKEND_URL = 'https://letstalk-iddd.onrender.com';
+  </script>
+  <script src="https://letstalk-iddd.onrender.com/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io(BACKEND_URL);
     let localStream = null;
     let currentRoom = null;
     let isMuted = false;
